@@ -43,7 +43,7 @@ class DCGAN(object):
             disc = mx.sym.Convolution(data, name='d' + str(index), kernel=kernel, stride=stride,
                                        pad=pad, num_filter=num_filter, no_bias=no_bias)
             disc_bn = mx.sym.BatchNorm(disc, name='dbn' + str(index), fix_gamma=fix_gamma, eps=eps)
-            disc_act = mx.sym.Activation(disc_bn if apply_bn else gen, name='dact' + str(index),
+            disc_act = mx.sym.LeakyReLU(disc_bn if apply_bn else disc, name='dact' + str(index),
                                          act_type='leaky', slope=0.2)
             return disc_act
 
@@ -66,7 +66,7 @@ class DCGAN(object):
             pred = mx.sym.Convolution(data, name='d' + str(index), kernel=kernel, stride=stride,
                                       pad=pad, num_filter=num_filter, no_bias=no_bias)
             pred_bn = mx.sym.BatchNorm(pred, name='dbn' + str(index), fix_gamma=fix_gamma, eps=eps)
-            pred_act = mx.sym.Activation(pred_bn if apply_bn else gen, name='dact' + str(index),
+            pred_act = mx.sym.LeakyReLU(pred_bn if apply_bn else pred, name='dact' + str(index),
                                          act_type='leaky', slope=0.2)
             return pred_act
 
