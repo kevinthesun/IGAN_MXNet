@@ -149,29 +149,24 @@ if __name__ == '__main__':
         })
     mods.append(mod_dist)
 
-
     # Printing utility function
     def norm_stat(d):
         return mx.nd.norm(d) / np.sqrt(d.size)
-
 
     mon = mx.mon.Monitor(10, norm_stat, pattern=".*output|d1_backward_data", sort=True)
     if mon is not None:
         for mod in mods:
             mod.install_monitor(mon)
 
-
     def facc(label, pred):
         pred = pred.ravel()
         label = label.ravel()
         return ((pred > 0.5) == label).mean()
 
-
     def fentropy(label, pred):
         pred = pred.ravel()
         label = label.ravel()
         return -(label * np.log(pred + 1e-12) + (1. - label) * np.log(1. - pred + 1e-12)).mean()
-
 
     mG = mx.metric.CustomMetric(fentropy)
     mD = mx.metric.CustomMetric(fentropy)
