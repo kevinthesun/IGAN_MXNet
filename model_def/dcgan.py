@@ -35,7 +35,7 @@ class DCGAN(object):
                                   num_filter=nc, apply_bn=False, act_type='tanh')
         return gout
 
-    def make_discriminator(self, image, no_bias=True, fix_gamma=True, eps=1e-5 + 1e-12):
+    def make_discriminator(self, image, label, no_bias=True, fix_gamma=True, eps=1e-5 + 1e-12):
         ndf = self.num_d_filter
         nlayer = self.num_layer
 
@@ -55,10 +55,11 @@ class DCGAN(object):
                                 num_filter=ndf * 2 ** (idx + 1))
 
         dout = mx.sym.Convolution(last_out, name='d5', kernel=(4, 4), num_filter=1, no_bias=no_bias)
-        dout = mx.sym.Flatten(dout)
-        return dout
+        flatten = mx.sym.Flatten(dout)
+        dloss = mx.sym.LogisticRegressionOutput(data=flatten, label=label, name='logistic')
+        return dloss
 
-    def make_predictor(self, image, no_bias=True, fix_gamma=True, eps=1e-5 + 1e-12):
+    def make_predictor(self, image, num_dim, no_bias=True, fix_gamma=True, eps=1e-5 + 1e-12):
         ndf = self.num_d_filter
         nlayer = self.num_layer
 
@@ -78,7 +79,8 @@ class DCGAN(object):
                                     num_filter=ndf * 2 ** (idx + 1))
 
         pout = mx.sym.Convolution(last_out, name='d5', kernel=(4, 4), num_filter=1, no_bias=no_bias)
-        pout = mx.sym.Flatten(pout)
-        pout = mx.sym.Activation(pout, act_type='tanh')
-        return pout
+        flatten = mx.sym.Flatten(pout)
+        fc = mx.sym.FullyConnected(flatten, num_hidden=num_dim)
+        pact = mx.sym.Activation(fc, act_type='tanh')
+        return pact
 

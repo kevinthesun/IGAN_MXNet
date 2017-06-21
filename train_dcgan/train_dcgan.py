@@ -113,9 +113,9 @@ if __name__ == '__main__':
 
     #Create generator module
     z_latent = mx.sym.Variable('latent_vector')
-    gen_out = dcgan_builder.make_generator(z_latent=z_latent)
+    gen_sym = dcgan_builder.make_generator(z_latent=z_latent)
 
-    mod_gen = mx.mod.Module(symbol=gen_out, data_names=('latent_vector',),
+    mod_gen = mx.mod.Module(symbol=gen_sym, data_names=('latent_vector',),
                             label_names=None, context=ctx)
     mod_gen.bind(data_shapes=rand_iter.provide_data)
     mod_gen.init_params(initializer=mx.init.Normal(0.02))
@@ -131,10 +131,9 @@ if __name__ == '__main__':
     #Create discriminator module
     data = mx.sym.Variable('data')
     label_dist = mx.sym.Variable('logistic_label')
-    dist_out = dcgan_builder.make_discriminator(data)
-    dist_loss = mx.sym.LogisticRegressionOutput(data=dist_out, label=label_dist, name='logistic')
+    dist_sym = dcgan_builder.make_discriminator(data, label_dist)
 
-    mod_dist = mx.mod.Module(symbol=dist_loss, data_names=('data',),
+    mod_dist = mx.mod.Module(symbol=dist_sym, data_names=('data',),
                              label_names=('logistic_label',), context=ctx)
     mod_dist.bind(data_shapes=train_iter.provide_data,
               label_shapes=[('logistic_label', (args.batch_size,))],
@@ -172,7 +171,7 @@ if __name__ == '__main__':
     mD = mx.metric.CustomMetric(fentropy)
     mACC = mx.metric.CustomMetric(facc)
 
-    print('Training...')
+    print('Training generator and discriminator...')
     stamp = datetime.now().strftime('%Y_%m_%d-%H_%M')
 
     # =============train===============
@@ -192,7 +191,8 @@ if __name__ == '__main__':
             label[:] = 0
             mod_dist.forward(mx.io.DataBatch(out_gen, [label]), is_train=True)
             mod_dist.backward()
-            mod_dist.update()
+            grad_dist = [[grad.copyto(grad.context) for grad in grads] for \
+                         grads in mod_dist._exec_group.grad_arrays]
             mod_dist.update_metric(mD, [label])
             mod_dist.update_metric(mACC, [label])
 
@@ -201,6 +201,9 @@ if __name__ == '__main__':
             batch.label = [label]
             mod_dist.forward(batch, is_train=True)
             mod_dist.backward()
+            for gradsr, gradsf in zip(mod_dist._exec_group.grad_arrays, grad_dist):
+                for gradr, gradf in zip(gradsr, gradsf):
+                    gradr += gradf
             mod_dist.update()
             mod_dist.update_metric(mD, [label])
             mod_dist.update_metric(mACC, [label])
@@ -234,5 +237,8 @@ if __name__ == '__main__':
 
         if args.save_model:
             print('Saving model...')
-            mod_gen.save_params('%s_G_%s-%04d.params' % (args.dataset, stamp, args.epoch))
-            mod_gen.save_params('%s_D_%s-%04d.params' % (args.dataset, stamp, args.epoch))
+            mod_gen.save_params('%s_G_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
+            mod_gen.save_params('%s_D_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
+
+    print('Training predictor')
+
