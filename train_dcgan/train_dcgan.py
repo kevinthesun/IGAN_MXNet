@@ -30,6 +30,8 @@ parser.add_argument('--wd', type=float, default=0,
                     help='weight decay for adam')
 parser.add_argument('--latent_vector_size', type=int, default=100,
                         help='Length of latent vector')
+parser.add_argument('--num_image', type=int, default=-1,
+                        help='Number of training images')
 parser.add_argument('--batch_size', type=int, default=32,
                         help='The batch size.')
 parser.add_argument('--interactive', type=bool, default=False,
@@ -53,29 +55,24 @@ class RandIter(mx.io.DataIter):
 
 def prep_data():
     img_dim = (3, 64, 64)
-    parent_folder = '/Users/kevinthesun1/Downloads/'
+    parent_folder = '../datasets/'
     data_path = parent_folder + args.dataset
-    resized_data_path = data_path + '_resized'
-    img_lst = args.dataset + '.lst'
-    create_lst_cmd = 'python im2rec.py %s %s --list True' % (args.dataset, data_path)
 
-    #Resize images to 64x64
-    os.system(create_lst_cmd)
-    if not os.path.isdir(resized_data_path):
-        os.system('mkdir %s' % (resized_data_path))
-        img_files = [os.path.join(data_path, fname) for fname in os.listdir(data_path)]
-        for image in img_files:
-            if not image.endswith('jpg'):
-                continue
-            img_arr = cv2.imread(image)
-            resized = cv2.resize(img_arr, (img_dim[1], img_dim[2]), interpolation=cv2.INTER_AREA)
-            if not cv2.imwrite(resized_data_path + '/' + os.path.basename(image), resized):
-                raise IOError("Error occurred while preprocessing images")
-
-
-    train_iter = mx.img.ImageIter(batch_size=args.batch_size, data_shape=img_dim,
-                                  path_root=resized_data_path, path_imglist=img_lst,
-                                  label_name='logistic_label')
+    #Resize images to 64x64 and concatenate to ndarray
+    data=[]
+    img_files = [os.path.join(data_path, fname) for fname in os.listdir(data_path)]
+    num_img = len(img_files) if args.num_image == -1 else args.num_image
+    for i, image in enumerate(img_files):
+        if i == num_img:
+            break
+        if not image.endswith('jpg'):
+            continue
+        img_arr = cv2.imread(image)
+        resized = cv2.resize(img_arr, (img_dim[1], img_dim[2]), interpolation=cv2.INTER_AREA)
+        normalized = np.array(resized/127.5 - 1)
+        data.append(np.rollaxis(normalized, 2, 0))
+    train_iter = mx.io.NDArrayIter(data=mx.nd.array(data), batch_size=args.batch_size,
+                                   label_name='logistic_label')
     return train_iter
 
 def fill_buf(buf, i, img, shape):
@@ -101,12 +98,12 @@ def visual(title, X):
 
 if __name__ == '__main__':
     args = parser.parse_args()
-    ctx = [mx.gpu(i) for i in range(args.num_gpu)] if args.num_gpu > 0 else mx.cpu(0)
+    ctx = [mx.gpu(int(i)) for i in range(args.num_gpu)] if args.num_gpu > 0 else mx.cpu(0)
 
     print("Preprocessing data...")
     train_iter = prep_data()
     rand_iter = RandIter(args.batch_size, args.latent_vector_size)
-    label = mx.nd.zeros((args.batch_size,), ctx=ctx)
+    label = mx.nd.zeros((args.batch_size,))
 
     print("Building model...")
     dcgan_builder = dcgan(num_layer=args.num_layer)
@@ -114,6 +111,7 @@ if __name__ == '__main__':
     #Create generator module
     z_latent = mx.sym.Variable('latent_vector')
     gen_out = dcgan_builder.make_generator(z_latent=z_latent)
+    gen_out.save('%s_G-symbol.json'%args.dataset)
 
     mod_gen = mx.mod.Module(symbol=gen_out, data_names=('latent_vector',),
                             label_names=None, context=ctx)
@@ -133,6 +131,7 @@ if __name__ == '__main__':
     label_dist = mx.sym.Variable('logistic_label')
     dist_out = dcgan_builder.make_discriminator(data)
     dist_loss = mx.sym.LogisticRegressionOutput(data=dist_out, label=label_dist, name='logistic')
+    dist_loss.save('%s_D-symbol.json'%args.dataset)
 
     mod_dist = mx.mod.Module(symbol=dist_loss, data_names=('data',),
                              label_names=('logistic_label',), context=ctx)
@@ -192,7 +191,7 @@ if __name__ == '__main__':
             label[:] = 0
             mod_dist.forward(mx.io.DataBatch(out_gen, [label]), is_train=True)
             mod_dist.backward()
-            mod_dist.update()
+            grad_dist = [[grad.copyto(grad.context) for grad in grads] for grads in mod_dist._exec_group.grad_arrays]
             mod_dist.update_metric(mD, [label])
             mod_dist.update_metric(mACC, [label])
 
@@ -201,6 +200,9 @@ if __name__ == '__main__':
             batch.label = [label]
             mod_dist.forward(batch, is_train=True)
             mod_dist.backward()
+            for gradsr, gradsf in zip(mod_dist._exec_group.grad_arrays, grad_dist):
+                for gradr, gradf in zip(gradsr, gradsf):
+                    gradr += gradf
             mod_dist.update()
             mod_dist.update_metric(mD, [label])
             mod_dist.update_metric(mACC, [label])
@@ -234,5 +236,5 @@ if __name__ == '__main__':
 
         if args.save_model:
             print('Saving model...')
-            mod_gen.save_params('%s_G_%s-%04d.params' % (args.dataset, stamp, args.epoch))
-            mod_gen.save_params('%s_D_%s-%04d.params' % (args.dataset, stamp, args.epoch))
+            mod_gen.save_params('%s_G_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
+            mod_gen.save_params('%s_D_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
