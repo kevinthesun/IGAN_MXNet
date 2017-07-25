@@ -129,7 +129,7 @@ if __name__ == '__main__':
             real_img = batch.data[0]
 
             #Calculate pixel loss and alexnet loss
-            pixel_loss = mx.md.LinearRegressionOutput(data=gen_img, label=real_img)
+            pixel_loss = mx.nd.LinearRegressionOutput(data=gen_img, label=real_img)
             mod_alexnet = alexnet_feature()
             gen_img_upscale = mx.nd.UpSampling(data=gen_img, scale=4, sample_type='bilinear')
             real_img_upscale = mx.nd.UpSampling(data=real_img, scale=4, sample_type='bilinear')
@@ -139,7 +139,7 @@ if __name__ == '__main__':
             gen_img_output = mod_alexnet.get_outputs()
             mod_alexnet.forward(mx.io.DataBatch([real_img_trans]), is_train=False)
             real_img_output = mod_alexnet.get_outputs()
-            alexnet_loss = mx.md.LinearRegressionOutput(data=gen_img_output, label=real_img_out)
+            alexnet_loss = mx.nd.LinearRegressionOutput(data=gen_img_output, label=real_img_out)
             total_loss = [pixel + alexnet * args.alpha for pixel, alexnet in zip(pixel_loss, alexnet_loss)]
 
             #Train predictor
