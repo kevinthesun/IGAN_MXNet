@@ -7,6 +7,7 @@ import argparse
 import mxnet as mx
 import cv2
 import numpy as np
+from mxnet import autograd
 from matplotlib import pyplot as plt
 from datetime import datetime
 
@@ -125,25 +126,28 @@ if __name__ == '__main__':
             mod_pred.forward(batch)
             pred_z = mod_pred.get_outputs()
             mod_gen.forward(mx.io.DataBatch(pred_z))
-            gen_img = mod_gen.get_outputs()[0]
-            real_img = batch.data[0]
+            gen_img = mod_gen.get_outputs()
+            gen_img.attach_grad()
+            real_img = batch.data
 
             #Calculate pixel loss and alexnet loss
-            pixel_loss = mx.md.LinearRegressionOutput(data=gen_img, label=real_img)
-            mod_alexnet = alexnet_feature()
-            gen_img_upscale = mx.nd.UpSampling(data=gen_img, scale=4, sample_type='bilinear')
-            real_img_upscale = mx.nd.UpSampling(data=real_img, scale=4, sample_type='bilinear')
-            gen_img_trans = transform_im(gen_img_upscale)
-            real_img_trans = transform_im(real_img_upscale)
-            mod_alexnet.forward(mx.io.DataBatch([gen_img_trans]), is_train=False)
-            gen_img_output = mod_alexnet.get_outputs()
-            mod_alexnet.forward(mx.io.DataBatch([real_img_trans]), is_train=False)
-            real_img_output = mod_alexnet.get_outputs()
-            alexnet_loss = mx.md.LinearRegressionOutput(data=gen_img_output, label=real_img_out)
-            total_loss = [pixel + alexnet * args.alpha for pixel, alexnet in zip(pixel_loss, alexnet_loss)]
+            with autograd.record():
+                pixel_loss = mx.nd.LinearRegressionOutput(data=gen_img, label=real_img)
+                mod_alexnet = alexnet_feature()
+                gen_img_upscale = mx.nd.UpSampling(data=gen_img, scale=4, sample_type='bilinear')
+                real_img_upscale = mx.nd.UpSampling(data=real_img, scale=4, sample_type='bilinear')
+                gen_img_trans = transform_im(gen_img_upscale)
+                real_img_trans = transform_im(real_img_upscale)
+                mod_alexnet.forward(mx.io.DataBatch([gen_img_trans]), is_train=False)
+                gen_img_output = mod_alexnet.get_outputs()
+                mod_alexnet.forward(mx.io.DataBatch([real_img_trans]), is_train=False)
+                real_img_output = mod_alexnet.get_outputs()
+                alexnet_loss = mx.nd.LinearRegressionOutput(data=gen_img_output, label=real_img_out)
+                total_loss = [pixel + alexnet * args.alpha for pixel, alexnet in zip(pixel_loss, alexnet_loss)]
 
             #Train predictor
-            mod_gen.backward(total_loss)
+            total_loss.backward()
+            mod_gen.backward(gen_img.grad())
             gen_input_grad = mod_gen.get_input_grads()
             mod_pred.backward(gen_input_grad)
             mod_pred.update()
