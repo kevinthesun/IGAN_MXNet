@@ -58,7 +58,7 @@ class DCGAN(object):
         dout = mx.sym.Flatten(dout)
         return dout
 
-    def make_predictor(self, image, no_bias=True, fix_gamma=True, eps=1e-5 + 1e-12):
+    def make_predictor(self, image, num_dim, no_bias=True, fix_gamma=True, eps=1e-5 + 1e-12):
         ndf = self.num_d_filter
         nlayer = self.num_layer
 
@@ -67,7 +67,7 @@ class DCGAN(object):
                                       pad=pad, num_filter=num_filter, no_bias=no_bias)
             pred_bn = mx.sym.BatchNorm(pred, name='dbn' + str(index), fix_gamma=fix_gamma, eps=eps)
             pred_act = mx.sym.LeakyReLU(pred_bn if apply_bn else pred, name='dact' + str(index),
-                                         act_type='leaky', slope=0.2)
+                                        act_type='leaky', slope=0.2)
             return pred_act
 
         din = conv_factory(image, index=1, kernel=(4, 4), stride=(2, 2), pad=(1, 1), apply_bn=False)
@@ -78,7 +78,8 @@ class DCGAN(object):
                                     num_filter=ndf * 2 ** (idx + 1))
 
         pout = mx.sym.Convolution(last_out, name='d5', kernel=(4, 4), num_filter=1, no_bias=no_bias)
-        pout = mx.sym.Flatten(pout)
-        pout = mx.sym.Activation(pout, act_type='tanh')
-        return pout
+        flatten = mx.sym.Flatten(pout)
+        fc = mx.sym.FullyConnected(flatten, num_hidden=num_dim)
+        pact = mx.sym.Activation(fc, act_type='tanh')
+        return pact
 
