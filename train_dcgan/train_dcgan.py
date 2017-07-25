@@ -23,11 +23,11 @@ parser.add_argument('--num_gpu', type=int, default='0',
 parser.add_argument('--num_epoch', type=int, default=25,
                         help='max num of epochs')
 parser.add_argument('--lr', type=float, default=0.0002,
-                    help='initial learning rate')
+                        help='initial learning rate')
 parser.add_argument('--beta1', type=float, default=0.5,
-                    help='Exponential decay rate for the first moment estimates for adam')
+                        help='Exponential decay rate for the first moment estimates for adam')
 parser.add_argument('--wd', type=float, default=0,
-                    help='weight decay for adam')
+                        help='weight decay for adam')
 parser.add_argument('--latent_vector_size', type=int, default=100,
                         help='Length of latent vector')
 parser.add_argument('--num_image', type=int, default=-1,
@@ -38,6 +38,8 @@ parser.add_argument('--interactive', type=bool, default=False,
                         help='Whether show output images for every 10 batches.')
 parser.add_argument('--save_model', type=bool, default=True,
                         help='Whether save model.')
+
+img_dim = (3, 64, 64)
 
 # Utility functions
 class RandIter(mx.io.DataIter):
@@ -53,12 +55,17 @@ class RandIter(mx.io.DataIter):
     def getdata(self):
         return [mx.random.normal(0, 1.0, shape=(self.batch_size, self.ndim, 1, 1))]
 
-def prep_data():
-    img_dim = (3, 64, 64)
+def resize(img, target_wd, target_ht):
+    img_arr = cv2.imread(image)
+    height, width = img_arr.shape[:2]
+    interpolation = cv2.INTER_AREA if height > target_ht and width > target_wd \
+        else cv2.INTER_LINEAR
+    resized_img = cv2.resize(img_arr, (target_ht, target_wd), interpolation=interpolation)
+    return resized_img
+
+def prep_data(target_wd, target_ht):
     parent_folder = '../datasets/'
     data_path = parent_folder + args.dataset
-
-    #Resize images to 64x64 and concatenate to ndarray
     data=[]
     img_files = [os.path.join(data_path, fname) for fname in os.listdir(data_path)]
     num_img = len(img_files) if args.num_image == -1 else args.num_image
@@ -67,8 +74,7 @@ def prep_data():
             break
         if not image.endswith('jpg'):
             continue
-        img_arr = cv2.imread(image)
-        resized = cv2.resize(img_arr, (img_dim[1], img_dim[2]), interpolation=cv2.INTER_AREA)
+        resized = resize(image, target_wd, target_ht)
         normalized = np.array(resized/127.5 - 1)
         data.append(np.rollaxis(normalized, 2, 0))
     train_iter = mx.io.NDArrayIter(data=mx.nd.array(data), batch_size=args.batch_size,
@@ -101,7 +107,7 @@ if __name__ == '__main__':
     ctx = [mx.gpu(int(i)) for i in range(args.num_gpu)] if args.num_gpu > 0 else mx.cpu(0)
 
     print("Preprocessing data...")
-    train_iter = prep_data()
+    train_iter = prep_data(img_dim[1], img_dim[2])
     rand_iter = RandIter(args.batch_size, args.latent_vector_size)
     label = mx.nd.zeros((args.batch_size,))
 
