@@ -88,7 +88,6 @@ if __name__ == '__main__':
     dcgan_builder = dcgan(num_layer=args.num_layer)
 
     #Load generator module
-    img_dim = (3, 64, 64)
     prefix = args.dataset
     model_zoo_dir = "/../model_zoo/%s/" % (prefix)
     os.system('cp %s/%s_G-symbol.json %s_G.json' % (model_zoo_dir, prefix, prefix))
