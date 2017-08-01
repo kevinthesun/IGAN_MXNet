@@ -9,6 +9,7 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 from datetime import datetime
+from mxnet.gluon import Trainer
 
 from model_def.dcgan import DCGAN as dcgan
 
@@ -114,45 +115,25 @@ if __name__ == '__main__':
     print("Building model...")
     dcgan_builder = dcgan(num_layer=args.num_layer)
 
-    #Create generator module
-    z_latent = mx.sym.Variable('latent_vector')
-    gen_out = dcgan_builder.make_generator(z_latent=z_latent)
-    gen_out.save('%s_G-symbol.json'%args.dataset)
-
-    mod_gen = mx.mod.Module(symbol=gen_out, data_names=('latent_vector',),
-                            label_names=None, context=ctx)
-    mod_gen.bind(data_shapes=rand_iter.provide_data)
-    mod_gen.init_params(initializer=mx.init.Normal(0.02))
-    mod_gen.init_optimizer(
-        optimizer='adam',
-        optimizer_params={
+    # Initialize parameters and set optimizer for generator
+    generator = dcgan_builder.make_generator()
+    generator.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
+    gen_trainer = Trainer(generator.collect_params(), 'adam',
+        {
             'learning_rate': args.lr,
             'wd': args.wd,
             'beta1': args.beta1,
         })
-    mods = [mod_gen]
 
-    #Create discriminator module
-    data = mx.sym.Variable('data')
-    label_dist = mx.sym.Variable('logistic_label')
-    dist_out = dcgan_builder.make_discriminator(data)
-    dist_loss = mx.sym.LogisticRegressionOutput(data=dist_out, label=label_dist, name='logistic')
-    dist_loss.save('%s_D-symbol.json'%args.dataset)
-
-    mod_dist = mx.mod.Module(symbol=dist_loss, data_names=('data',),
-                             label_names=('logistic_label',), context=ctx)
-    mod_dist.bind(data_shapes=train_iter.provide_data,
-              label_shapes=[('logistic_label', (args.batch_size,))],
-              inputs_need_grad=True)
-    mod_dist.init_params(initializer=mx.init.Normal(0.02))
-    mod_dist.init_optimizer(
-        optimizer='adam',
-        optimizer_params={
+    # Initialize parameters and set optimizer for discriminator
+    discriminator = dcgan_builder.make_discriminator()
+    discriminator.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
+    dist_trainer = Trainer(generator.collect_params(), 'adam',
+        {
             'learning_rate': args.lr,
             'wd': args.wd,
             'beta1': args.beta1,
         })
-    mods.append(mod_dist)
 
     # Printing utility function
     def norm_stat(d):
@@ -184,13 +165,8 @@ if __name__ == '__main__':
     for epoch in range(args.num_epoch):
         train_iter.reset()
         for t, batch in enumerate(train_iter):
-            # Draw z_latent vector from normal distribution
+            # Draw z_latent vector from normal distribution and generate images
             rbatch = rand_iter.next()
-
-            if mon is not None:
-                mon.tic()
-
-            mod_gen.forward(rbatch, is_train=True)
             out_gen = mod_gen.get_outputs()
 
             # Train discriminator on generated fake images
