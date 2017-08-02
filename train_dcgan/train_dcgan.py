@@ -9,7 +9,8 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 from datetime import datetime
-from mxnet.gluon import Trainer
+from mxnet.gluon import Trainer, util, loss
+from mxnet import autograd as ag
 
 from model_def.dcgan import DCGAN as dcgan
 
@@ -35,6 +36,8 @@ parser.add_argument('--num_image', type=int, default=-1,
                         help='Number of training images')
 parser.add_argument('--batch_size', type=int, default=32,
                         help='The batch size.')
+parser.add_argument('--use_hybrid', type=bool, default=True,
+                        help='Whether to use hybrid mode.')
 parser.add_argument('--interactive', type=bool, default=False,
                         help='Whether show output images for every 10 batches.')
 parser.add_argument('--save_model', type=bool, default=True,
@@ -127,6 +130,7 @@ if __name__ == '__main__':
 
     # Initialize parameters and set optimizer for discriminator
     discriminator = dcgan_builder.make_discriminator()
+    dist_loss_func = loss.SoftmaxCrossEntropyLoss()
     discriminator.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
     dist_trainer = Trainer(generator.collect_params(), 'adam',
         {
@@ -134,6 +138,10 @@ if __name__ == '__main__':
             'wd': args.wd,
             'beta1': args.beta1,
         })
+
+    if args.use_hybrid:
+        generator.hybridize()
+        discriminator.hybridize()
 
     # Printing utility function
     def norm_stat(d):
@@ -166,18 +174,39 @@ if __name__ == '__main__':
         train_iter.reset()
         for t, batch in enumerate(train_iter):
             # Draw z_latent vector from normal distribution and generate images
-            rbatch = rand_iter.next()
-            out_gen = mod_gen.get_outputs()
+            rand_batch = rand_iter.next()
+            real_img = utils.split_and_load(batch.data[0], ctx_list=ctx, batch_axis=0)
+            rand_vector = utils.split_and_load(rand_batch.data[0], ctx_list=ctx, batch_axis=0)
+            gen_img = []
+            for data_slice in rand_vector:
+                gen_img.append(generator.forward(rand_vector))
 
-            # Train discriminator on generated fake images
+            # Run forward and backward for discriminator on generated fake images
             label[:] = 0
+            split_false_label = utils.split_and_load(label, ctx_list=ctx, batch_axis=0)
+            label[:] = 1
+            split_true_label = utils.split_and_load(label, ctx_list=ctx, batch_axis=0)
+            dist_gen_out = []
+            dist_real_out = []
+            dist_loss = []
+            with ag.record():
+                for gen_img_slice, real_img_slice, false_label_slice, true_label_slice \
+                        in zip(gen_img, real_img, split_false_label, split_true_label):
+                    gen_img_out = discriminator.forward(gen_img_slice)
+                    real_img_out = discriminator.forward(real_img_slice)
+                    dist_gen_out.append(gen_img_out)
+                    dist_real_out.append(real_img_out)
+                    loss = dist_loss_func(gen_img_out, false_label_slice) + \
+                           dist_loss_func(real_img_out, true_label_slice)
+                    dist_loss.append(loss)
+
             mod_dist.forward(mx.io.DataBatch(out_gen, [label]), is_train=True)
             mod_dist.backward()
             grad_dist = [[grad.copyto(grad.context) for grad in grads] for grads in mod_dist._exec_group.grad_arrays]
             mod_dist.update_metric(mD, [label])
             mod_dist.update_metric(mACC, [label])
 
-            # Train discriminator on real images
+            # Run forward and backward for discriminator on real images
             label[:] = 1
             batch.label = [label]
             mod_dist.forward(batch, is_train=True)
