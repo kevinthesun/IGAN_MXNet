@@ -172,16 +172,17 @@ if __name__ == '__main__':
     # =============train===============
     for epoch in range(args.num_epoch):
         train_iter.reset()
+        iter_num = 0
         for t, batch in enumerate(train_iter):
-            # Draw z_latent vector from normal distribution and generate images
+            # Draw z_latent vector from normal distribution and generate images.
             rand_batch = rand_iter.next()
             real_img = utils.split_and_load(batch.data[0], ctx_list=ctx, batch_axis=0)
-            rand_vector = utils.split_and_load(rand_batch.data[0], ctx_list=ctx, batch_axis=0)
+            split_rand_vector = utils.split_and_load(rand_batch.data[0], ctx_list=ctx, batch_axis=0)
             gen_img = []
-            for data_slice in rand_vector:
-                gen_img.append(generator.forward(rand_vector))
+            for data_slice in split_rand_vector:
+                gen_img.append(generator.forward(data_slice))
 
-            # Run forward and backward for discriminator on generated fake images
+            # Train discriminator using both fake and real images.
             label[:] = 0
             split_false_label = utils.split_and_load(label, ctx_list=ctx, batch_axis=0)
             label[:] = 1
@@ -199,53 +200,48 @@ if __name__ == '__main__':
                     loss = dist_loss_func(gen_img_out, false_label_slice) + \
                            dist_loss_func(real_img_out, true_label_slice)
                     dist_loss.append(loss)
+                # store the loss and do backward after we have done forward
+                # on all GPUs for better speed on multiple GPUs.
+                for loss in dist_loss:
+                    loss.backward()
+            dist_trainer.step(batch.data[0].shape[0])
+            mD.update(split_false_label, dist_gen_out)
+            mD.update(split_true_label, dist_real_out)
+            mACC.update(split_false_label, dist_gen_out)
+            mACC.update(split_true_label, dist_real_out)
 
-            mod_dist.forward(mx.io.DataBatch(out_gen, [label]), is_train=True)
-            mod_dist.backward()
-            grad_dist = [[grad.copyto(grad.context) for grad in grads] for grads in mod_dist._exec_group.grad_arrays]
-            mod_dist.update_metric(mD, [label])
-            mod_dist.update_metric(mACC, [label])
+            # Train generator. We only need to update generator.
+            rand_batch = rand_iter.next()
+            split_rand_vector = utils.split_and_load(rand_batch.data[0], ctx_list=ctx, batch_axis=0)
+            dist_out = []
+            dist_loss = []
+            with ag.record():
+                for data_slice, true_label_slice in zip(split_rand_vector, split_true_label):
+                    gen_img = generator.forward(data_slice)
+                    output = discriminator.forward(gen_img)
+                    loss = dist_loss_func(output, true_label_slice)
+                    dist_out.append(output)
+                    dist_loss.append(loss)
+                for loss in dist_loss:
+                    loss.backward()
+            gen_trainer.step(rand_batch.data[0].shape[0])
+            mG.update(split_true_label, dist_out)
 
-            # Run forward and backward for discriminator on real images
-            label[:] = 1
-            batch.label = [label]
-            mod_dist.forward(batch, is_train=True)
-            mod_dist.backward()
-            for gradsr, gradsf in zip(mod_dist._exec_group.grad_arrays, grad_dist):
-                for gradr, gradf in zip(gradsr, gradsf):
-                    gradr += gradf
-            mod_dist.update()
-            mod_dist.update_metric(mD, [label])
-            mod_dist.update_metric(mACC, [label])
-
-            # Train generator
-            label[:] = 1
-            mod_dist.forward(mx.io.DataBatch(out_gen, [label]), is_train=True)
-            mod_dist.backward()
-            diff_dist = mod_dist.get_input_grads()
-            mod_gen.backward(diff_dist)
-            mod_gen.update()
-
-            mG.update([label], mod_dist.get_outputs())
-
-            if mon is not None:
-                mon.toc_print()
-
-            t += 1
+            iter_num += 1
             if t % 10 == 0:
-                print('epoch:', epoch, 'iter:', t, 'metric:', mACC.get(), mG.get(), mD.get())
+                print('epoch:', epoch, 'iter:', iter_num, 'metric:', mACC.get(), mG.get(), mD.get())
                 mACC.reset()
                 mG.reset()
                 mD.reset()
 
                 if args.interactive:
-                    visual('gout', out_gen[0].asnumpy())
-                    diff = diff_dist[0].asnumpy()
-                    diff = (diff - diff.mean()) / diff.std()
-                    visual('diff', diff)
+                    latent_vector = mx.random.normal(0, 1.0, shape=(args.batch_size,
+                                                                    args.latent_vector_size, 1, 1))
+                    gout = generator.forward(latent_vector)
+                    visual('gout', gout.asnumpy())
                     visual('data', batch.data[0].asnumpy())
 
-        if args.save_model:
-            print('Saving model...')
-            mod_gen.save_params('%s_G_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
-            mod_gen.save_params('%s_D_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
+    if args.save_model:
+        print('Saving model...')
+        generator.save_params('%s_G_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
+        discriminator.save_params('%s_D_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
