@@ -8,13 +8,16 @@ import mxnet as mx
 import cv2
 import numpy as np
 from mxnet import autograd
+from mxnet.gluon import Trainer, util, loss
+from mxnet.gluon.model_zoo.vision import alexnet
+from mxnet.gluon.model_zoo.model_store import get_model_file
 from matplotlib import pyplot as plt
 from datetime import datetime
 
 from model_def.dcgan import DCGAN as dcgan
 from train_dcgan import prep_data, visual
 
-parser = argparse.ArgumentParser(description="Train DCGAN.",
+parser = argparse.ArgumentParser(description="Train DCGAN Predictor.",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('--dataset', type=str, default='celeba',
                         help='dataset used for training')
@@ -36,12 +39,12 @@ parser.add_argument('--latent_vector_size', type=int, default=100,
                         help='Length of latent vector')
 parser.add_argument('--num_image', type=int, default=-1,
                         help='Number of training images')
-parser.add_argument('--batch_size', type=int, default=32,
+parser.add_argument('--batch_size', type=int, default=64,
                         help='The batch size.')
 parser.add_argument('--img_dim', type=bool, default=True,
                         help='Whether save model.')
-parser.add_argument('--interactive', type=bool, default=False,
-                        help='Whether show output images for every 10 batches.')
+parser.add_argument('--use_hybrid', type=bool, default=True,
+                        help='Whether to use hybrid mode.')
 parser.add_argument('--save_model', type=bool, default=True,
                         help='Whether save model.')
 
@@ -49,18 +52,29 @@ img_dim = (3, 64, 64)
 alexnet_input_dim = (3, 256, 256)
 
 # Utility functions
-def alexnet_feature(layer_name='inception_4e_output'):
-    model_zoo_dir = "/../model_zoo/alexnet/"
-    os.system('cp %s/bvlc_alexnet-symbol.json bvlc_alexnet-symbol.json' % (model_zoo_dir))
-    os.system('cp %s/bvlc_alexnet-0000.params bvlc_alexnet-0000.params' % (model_zoo_dir))
-    sym, arg_params, aux_params = mx.model.load_checkpoint('bvlc_alexnet', 0)
-    os.system('rm bvlc_alexnet-symbol.json bvlc_alexnet-0000.params')
+class AlexNetFeature(HybridBlock):
+    """AlexNet model from the `"One weird trick..." <https://arxiv.org/abs/1404.5997>`_ paper.
+       Extract layers until the fourth convolutional layer.
+    """
+    def __init__(self, classes=1000, **kwargs):
+        super(AlexNet, self).__init__(**kwargs)
+        with self.name_scope():
+            self.features = nn.HybridSequential(prefix='')
+            with self.features.name_scope():
+                self.features.add(nn.Conv2D(64, kernel_size=11, strides=4, padding=2))
+                self.features.add(nn.Activation('relu'))
+                self.features.add(nn.MaxPool2D(pool_size=3, strides=2))
+                self.features.add(nn.Conv2D(192, kernel_size=5, padding=2))
+                self.features.add(nn.Activation('relu'))
+                self.features.add(nn.MaxPool2D(pool_size=3, strides=2))
+                self.features.add(nn.Conv2D(384, kernel_size=3, padding=1))
+                self.features.add(nn.Activation('relu'))
+                self.features.add(nn.Conv2D(256, kernel_size=3, padding=1))
+                self.features.add(nn.Activation('relu'))
 
-    all_layers = sym.get_internals()
-    net = all_layers[layer_name + '_output']
-    mod = mx.mod.Module(symbol=net, context=ctx, label_names=None)
-    mod.bind(data_shapes=[('data', tuple(args.batch_size + list(alexnet_input_dim)))])
-    return mod
+    def hybrid_forward(self, F, x):
+        x = self.features(x)
+        return x
 
 def transform_im(img, npxl=64, nc=3):
     if nc == 3:
@@ -82,38 +96,35 @@ if __name__ == '__main__':
     ctx = [mx.gpu(int(i)) for i in range(args.num_gpu)] if args.num_gpu > 0 else mx.cpu(0)
 
     print("Preprocessing data...")
-    train_iter = prep_data()
+    train_iter = prep_data(img_dim[1], img_dim[2])
 
     print("Building model...")
     dcgan_builder = dcgan(num_layer=args.num_layer)
 
-    #Load generator module
-    prefix = args.dataset
-    model_zoo_dir = "/../model_zoo/%s/" % (prefix)
-    os.system('cp %s/%s_G-symbol.json %s_G.json' % (model_zoo_dir, prefix, prefix))
-    os.system('cp %s/%s_G.params %s_G-0000.params' % (model_zoo_dir, prefix, prefix))
-    gen_sym, arg_params, aux_params = mx.model.load_checkpoint('%s_G' % (prefix), 0)
-    os.system('rm %s_G.json %s_G-0000.params' % (prefix, prefix))
+    # Load generator pre-trained module
+    gen_params_file = '../model_zoo/celeba_G.params'
+    generator = dcgan_builder.make_generator()
+    generator.load_params(gen_params_file, ctx)
 
-    mod_gen = mx.mod.Module(symbol=sym, context=ctx, data_names=('latent_vector'), label_names=None)
-    mod_gen.bind(data_shapes=[('latent_vector', (args.batch_size, args.latent_vector_size))],
-                 inputs_need_grad=True)
-    mod_gen.set_params(arg_params, aux_params)
+    # Create alexnet conv4 feature network
+    alexnet_feature = AlexNetFeature()
+    alexnet_feature.load_params(get_model_file('alexnet'), ctx, ignore_extra=True)
 
-    #Create predictor module
-    r_img = mx.sym.Variable('r_img')
-    pred_out = dcgan_builder.make_predictor(r_img, args.latent_vector_size)
-    mod_pred = mx.mod.Module(symbol=pred_out, context=ctx, data_names=('r_img'), label_names=None)
-    mod_pred.bind(data_shapes=[('r_img', train_iter.provide_data)])
-    mod_pred.init_params(initializer=mx.init.Normal(0.02))
-    mod_pred.init_optimizer(
-        optimizer='adam',
-        optimizer_params={
+    # Initialize parameters and set optimizer for predictor
+    predictor = dcgan_builder.make_predictor()
+    pred_loss_func = loss.L2Loss()
+    predictor.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
+    pred_trainer = Trainer(predictor.collect_params(), 'adam',
+        {
             'learning_rate': args.lr,
             'wd': args.wd,
             'beta1': args.beta1,
         })
 
+    if use_hybrid:
+        generator.hybridize()
+        alexnet_feature.hybridize()
+        predictor.hybridize()
 
     print('Training predictor...')
     stamp = datetime.now().strftime('%Y_%m_%d-%H_%M')
@@ -122,42 +133,30 @@ if __name__ == '__main__':
     for epoch in range(args.num_epoch):
         train_iter.reset()
         for t, batch in enumerate(train_iter):
-            mod_pred.forward(batch)
-            pred_z = mod_pred.get_outputs()
-            mod_gen.forward(mx.io.DataBatch(pred_z))
-            gen_img = mod_gen.get_outputs()
-            gen_img.attach_grad()
-            real_img = batch.data
-
-            #Calculate pixel loss and alexnet loss
-            with autograd.record():
-                pixel_loss = mx.nd.LinearRegressionOutput(data=gen_img, label=real_img)
-                mod_alexnet = alexnet_feature()
-                gen_img_upscale = mx.nd.UpSampling(data=gen_img, scale=4, sample_type='bilinear')
-                real_img_upscale = mx.nd.UpSampling(data=real_img, scale=4, sample_type='bilinear')
-                gen_img_trans = transform_im(gen_img_upscale)
-                real_img_trans = transform_im(real_img_upscale)
-                mod_alexnet.forward(mx.io.DataBatch([gen_img_trans]), is_train=False)
-                gen_img_output = mod_alexnet.get_outputs()
-                mod_alexnet.forward(mx.io.DataBatch([real_img_trans]), is_train=False)
-                real_img_output = mod_alexnet.get_outputs()
-                alexnet_loss = mx.nd.LinearRegressionOutput(data=gen_img_output, label=real_img_out)
-                total_loss = [pixel + alexnet * args.alpha for pixel, alexnet in zip(pixel_loss, alexnet_loss)]
-
-            #Train predictor
-            total_loss.backward()
-            mod_gen.backward(gen_img.grad())
-            gen_input_grad = mod_gen.get_input_grads()
-            mod_pred.backward(gen_input_grad)
-            mod_pred.update()
+            real_img_slice = utils.split_and_load(batch.data[0], ctx_list=ctx, batch_axis=0)
+            loss_val = 0
+            pred_loss = []
+            with ag.record():
+                for real_img in real_img_slice:
+                    pred_latent_vector = predictor.forward(real_img)
+                    gen_img = generator.forward(pred_latent_vector)
+                    gen_img_upscale = mx.nd.UpSampling(data=gen_img, scale=4, sample_type='bilinear')
+                    real_img_upscale = mx.nd.UpSampling(data=real_img, scale=4, sample_type='bilinear')
+                    alexnet_gen_output = alexnet_feature.forward(gen_img_upscale)
+                    alexnet_real_output = alexnet_feature.forward(real_img_upscale)
+                    # Total loss is sum of pixel to pixel L2 loss and alexnet feature output L2 loss
+                    pixel_loss = pred_loss(gen_img, real_img)
+                    alexnet_feature_loss = pred_loss(alexnet_gen_output, alexnet_real_output)
+                    loss = pixel_loss + alexnet_feature_loss
+                    pred_loss.append(loss)
+                    loss_val += loss.asnumpy()
+                for loss in pred_loss:
+                    loss.backward()
+            pred_trainer.step(batch.data[0].shape[0])
 
             t += 1
             if t % 10 == 0:
-                print('epoch:', epoch, 'iter:', t, 'metric:', total_loss[0])
-
-                if args.interactive:
-                    visual('gen_image', gen_img.asnumpy())
-                    visual('real_image', batch.data[0].asnumpy())
+                print('epoch:', epoch, 'iter:', t, 'metric:', loss_val.mean())
 
         if args.save_model:
             print('Saving model...')
