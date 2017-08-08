@@ -35,16 +35,15 @@ class DCGAN(object):
         nlayer = self.num_layer
         discriminator = HybridSequential()
 
-        with self.discriminator.name_scope():
+        with discriminator.name_scope():
             self._conv_factory(discriminator, kernel=(4, 4), use_bias=use_bias, scale=scale,
-                               epsilon=epsilon, strides=(2, 2), padding=(1, 1),
+                               epsilon=epsilon, num_filter=ndf, strides=(2, 2), padding=(1, 1), 
                                apply_bn=False)
             for idx in range(nlayer):
                 self._conv_factory(discriminator, kernel=(4, 4), use_bias=use_bias, scale=scale,
-                                   epsilon=epsilon, strides=(2, 2), padding=(1, 1),
-                                   num_filter=ndf * 2 ** (idx + 1))
-
-            discriminator.add(Conv2D(channels=1, kernel=(4, 4), use_bias=use_bias))
+                                   epsilon=epsilon, num_filter=ndf * 2 ** (idx + 1), 
+                                   strides=(2, 2), padding=(1, 1))
+            discriminator.add(Conv2D(channels=1, kernel_size=(4, 4), use_bias=use_bias))
             discriminator.add(Flatten())
             return discriminator
 
@@ -53,31 +52,31 @@ class DCGAN(object):
         nlayer = self.num_layer
         predictor = HybridSequential()
 
-        with self.predictor.name_scope():
+        with predictor.name_scope():
             self._conv_factory(predictor, kernel=(4, 4), use_bias=use_bias, scale=scale,
-                               epsilon=epsilon, strides=(2, 2), padding=(1, 1),
+                               epsilon=epsilon, num_filter=ndf, strides=(2, 2), padding=(1, 1), 
                                apply_bn=False)
             for idx in range(nlayer):
                 self._conv_factory(predictor, kernel=(4, 4), use_bias=use_bias, scale=scale,
-                                   epsilon=epsilon, strides=(2, 2), padding=(1, 1),
-                                   num_filter=ndf * 2 ** (idx + 1))
+                                   epsilon=epsilon, num_filter=ndf * 2 ** (idx + 1), 
+                                   strides=(2, 2), padding=(1, 1))
 
-            predictor.add(Conv2D(channels=1, kernel=(4, 4), use_bias=use_bias))
+            predictor.add(Conv2D(channels=1, kernel_size=(4, 4), use_bias=use_bias))
             predictor.add(Flatten())
             predictor.add(Dense(units=num_dim, activation='tanh'))
             return predictor
 
-    def _trans_conv_factory(self, model, kernel, use_bias, scale, epsilon, strides=(1, 1), padding=(0, 0),
-                            num_filter=self.num_d_filter, apply_bn=True, act_type='relu'):
-        model.add(Conv2DTranspose(channels=num_filter, kernel=kernel, strides=strides,
+    def _trans_conv_factory(self, model, kernel, use_bias, scale, epsilon, num_filter,
+                            strides=(1, 1), padding=(0, 0), apply_bn=True, act_type='relu'):
+        model.add(Conv2DTranspose(channels=num_filter, kernel_size=kernel, strides=strides,
                                   pad=padding, use_bias=use_bias))
         if apply_bn:
             model.add(BatchNorm(scale=scale, epsilon=epsilon))
         model.add(Activation(activation=act_type))
 
-    def _conv_factory(self, model, kernel, use_bias, scale, epsilon, strides=(1, 1), padding=(0, 0),
-                      num_filter=self.num_d_filter, apply_bn=True):
-        model.add(Conv2D(channels=num_filter, kernel=kernel, strides=strides,
+    def _conv_factory(self, model, kernel, use_bias, scale, epsilon, num_filter, 
+                      strides=(1, 1), padding=(0, 0), apply_bn=True):
+        model.add(Conv2D(channels=num_filter, kernel_size=kernel, strides=strides,
                          padding=padding, use_bias=use_bias))
         if apply_bn:
             model.add(BatchNorm(scale=scale, epsilon=epsilon))

@@ -4,12 +4,13 @@ import os
 import sys
 sys.path.append('..')
 import argparse
+import time
 import mxnet as mx
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 from datetime import datetime
-from mxnet.gluon import Trainer, util, loss
+from mxnet.gluon import Trainer,utils, loss
 from mxnet import autograd as ag
 
 from model_def.dcgan import DCGAN as dcgan
@@ -34,7 +35,7 @@ parser.add_argument('--latent_vector_size', type=int, default=100,
                         help='Length of latent vector')
 parser.add_argument('--num_image', type=int, default=-1,
                         help='Number of training images')
-parser.add_argument('--batch_size', type=int, default=32,
+parser.add_argument('--batch_size', type=int, default=64,
                         help='The batch size.')
 parser.add_argument('--use_hybrid', type=bool, default=True,
                         help='Whether to use hybrid mode.')
@@ -46,6 +47,23 @@ parser.add_argument('--save_model', type=bool, default=True,
 img_dim = (3, 64, 64)
 
 # Utility functions
+class LogisticLoss(loss.Loss):
+    """Computes the logistic cross entropy loss.
+    """
+    def __init__(self, from_logits=False, weight=None, batch_axis=0, eps=10e-8, **kwargs):
+        super(LogisticLoss, self).__init__(weight, batch_axis, **kwargs)
+        self._from_logits = from_logits
+        self._eps = eps
+
+    def hybrid_forward(self, F, output, label):
+        if not self._from_logits:
+            output = F.Activation(output, act_type='sigmoid')
+        output = F.clip(output, a_min=self._eps, a_max=1.0 - self._eps)
+        output = -(label * F.log(output) + (1.0 - label) * F.log(1.0 - output))
+        output = F.mean(output)
+        #print(output)
+        return output
+
 class RandIter(mx.io.DataIter):
     def __init__(self, batch_size, ndim):
         self.batch_size = batch_size
@@ -60,7 +78,7 @@ class RandIter(mx.io.DataIter):
         return [mx.random.normal(0, 1.0, shape=(self.batch_size, self.ndim, 1, 1))]
 
 def resize(img, target_wd, target_ht):
-    img_arr = cv2.imread(image)
+    img_arr = cv2.imread(img)
     height, width = img_arr.shape[:2]
     interpolation = cv2.INTER_AREA if height > target_ht and width > target_wd \
         else cv2.INTER_LINEAR
@@ -113,7 +131,7 @@ if __name__ == '__main__':
     print("Preprocessing data...")
     train_iter = prep_data(img_dim[1], img_dim[2])
     rand_iter = RandIter(args.batch_size, args.latent_vector_size)
-    label = mx.nd.zeros((args.batch_size,))
+    label = mx.nd.zeros((args.batch_size, 1))
 
     print("Building model...")
     dcgan_builder = dcgan(num_layer=args.num_layer)
@@ -130,9 +148,9 @@ if __name__ == '__main__':
 
     # Initialize parameters and set optimizer for discriminator
     discriminator = dcgan_builder.make_discriminator()
-    dist_loss_func = loss.SoftmaxCrossEntropyLoss()
+    dist_loss_func = LogisticLoss()
     discriminator.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
-    dist_trainer = Trainer(generator.collect_params(), 'adam',
+    dist_trainer = Trainer(discriminator.collect_params(), 'adam',
         {
             'learning_rate': args.lr,
             'wd': args.wd,
@@ -146,11 +164,6 @@ if __name__ == '__main__':
     # Printing utility function
     def norm_stat(d):
         return mx.nd.norm(d) / np.sqrt(d.size)
-
-    mon = mx.mon.Monitor(10, norm_stat, pattern=".*output|d1_backward_data", sort=True)
-    if mon is not None:
-        for mod in mods:
-            mod.install_monitor(mon)
 
     def facc(label, pred):
         pred = pred.ravel()
@@ -170,6 +183,7 @@ if __name__ == '__main__':
     stamp = datetime.now().strftime('%Y_%m_%d-%H_%M')
 
     # =============train===============
+    start_time = time.time()
     for epoch in range(args.num_epoch):
         train_iter.reset()
         iter_num = 0
@@ -195,8 +209,8 @@ if __name__ == '__main__':
                         in zip(gen_img, real_img, split_false_label, split_true_label):
                     gen_img_out = discriminator.forward(gen_img_slice)
                     real_img_out = discriminator.forward(real_img_slice)
-                    dist_gen_out.append(gen_img_out)
-                    dist_real_out.append(real_img_out)
+                    dist_gen_out.append(mx.nd.Activation(gen_img_out, act_type='sigmoid'))
+                    dist_real_out.append(mx.nd.Activation(real_img_out, act_type='sigmoid'))
                     loss = dist_loss_func(gen_img_out, false_label_slice) + \
                            dist_loss_func(real_img_out, true_label_slice)
                     dist_loss.append(loss)
@@ -204,7 +218,7 @@ if __name__ == '__main__':
                 # on all GPUs for better speed on multiple GPUs.
                 for loss in dist_loss:
                     loss.backward()
-            dist_trainer.step(batch.data[0].shape[0])
+            dist_trainer.step(batch.data[0].shape[0], ignore_stale_grad=True)
             mD.update(split_false_label, dist_gen_out)
             mD.update(split_true_label, dist_real_out)
             mACC.update(split_false_label, dist_gen_out)
@@ -220,7 +234,7 @@ if __name__ == '__main__':
                     gen_img = generator.forward(data_slice)
                     output = discriminator.forward(gen_img)
                     loss = dist_loss_func(output, true_label_slice)
-                    dist_out.append(output)
+                    dist_out.append(mx.nd.Activation(output, act_type='sigmoid'))
                     dist_loss.append(loss)
                 for loss in dist_loss:
                     loss.backward()
@@ -240,6 +254,7 @@ if __name__ == '__main__':
                     gout = generator.forward(latent_vector)
                     visual('gout', gout.asnumpy())
                     visual('data', batch.data[0].asnumpy())
+    print("Total training time is %s." % (str(time.time() - start_time)))
 
     if args.save_model:
         print('Saving model...')
