@@ -69,7 +69,7 @@ class DCGAN(object):
     def _trans_conv_factory(self, model, kernel, use_bias, scale, epsilon, num_filter,
                             strides=(1, 1), padding=(0, 0), apply_bn=True, act_type='relu'):
         model.add(Conv2DTranspose(channels=num_filter, kernel_size=kernel, strides=strides,
-                                  pad=padding, use_bias=use_bias))
+                                  padding=padding, use_bias=use_bias))
         if apply_bn:
             model.add(BatchNorm(scale=scale, epsilon=epsilon))
         model.add(Activation(activation=act_type))
