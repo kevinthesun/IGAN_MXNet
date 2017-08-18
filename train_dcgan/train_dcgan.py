@@ -119,7 +119,7 @@ def resize(img, target_wd, target_ht):
     resized_img = cv2.resize(img_arr, (target_ht, target_wd), interpolation=interpolation)
     return resized_img
 
-def prep_data(target_wd, target_ht):
+def prep_data(target_wd, target_ht, args):
     parent_folder = '../datasets/'
     data_path = parent_folder + args.dataset
     data=[]
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     ctx = [mx.gpu(int(i)) for i in range(args.num_gpu)] if args.num_gpu > 0 else mx.cpu(0)
 
     print("Preprocessing data...")
-    train_iter = prep_data(img_dim[1], img_dim[2])
+    train_iter = prep_data(img_dim[1], img_dim[2], args)
     rand_iter = RandIter(args.batch_size, args.latent_vector_size)
     label = mx.nd.zeros((args.batch_size, 1))
 

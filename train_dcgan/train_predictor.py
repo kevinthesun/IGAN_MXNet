@@ -7,8 +7,9 @@ import argparse
 import mxnet as mx
 import cv2
 import numpy as np
-from mxnet import autograd
-from mxnet.gluon import Trainer, util, loss
+from mxnet import autograd as ag
+from mxnet.gluon import nn, Trainer, utils, loss
+from mxnet.gluon.block import HybridBlock
 from mxnet.gluon.model_zoo.vision import alexnet
 from mxnet.gluon.model_zoo.model_store import get_model_file
 from matplotlib import pyplot as plt
@@ -27,7 +28,7 @@ parser.add_argument('--num_gpu', type=int, default='0',
                         help='number of gpus used. 0 means using cpu')
 parser.add_argument('--num_epoch', type=int, default=25,
                         help='max num of epochs')
-parser.add_argument('--alpha', type=float, default=0.002
+parser.add_argument('--alpha', type=float, default=0.002,
                         help='the weight for feature loss. Loss=pixel_loss + alpha * feature_loss')
 parser.add_argument('--lr', type=float, default=0.0002,
                         help='initial learning rate')
@@ -41,8 +42,6 @@ parser.add_argument('--num_image', type=int, default=-1,
                         help='Number of training images')
 parser.add_argument('--batch_size', type=int, default=64,
                         help='The batch size.')
-parser.add_argument('--img_dim', type=bool, default=True,
-                        help='Whether save model.')
 parser.add_argument('--use_hybrid', type=bool, default=True,
                         help='Whether to use hybrid mode.')
 parser.add_argument('--save_model', type=bool, default=True,
@@ -57,7 +56,7 @@ class AlexNetFeature(HybridBlock):
        Extract layers until the fourth convolutional layer.
     """
     def __init__(self, classes=1000, **kwargs):
-        super(AlexNet, self).__init__(**kwargs)
+        super(AlexNetFeature, self).__init__(**kwargs)
         with self.name_scope():
             self.features = nn.HybridSequential(prefix='')
             with self.features.name_scope():
@@ -96,13 +95,13 @@ if __name__ == '__main__':
     ctx = [mx.gpu(int(i)) for i in range(args.num_gpu)] if args.num_gpu > 0 else mx.cpu(0)
 
     print("Preprocessing data...")
-    train_iter = prep_data(img_dim[1], img_dim[2])
+    train_iter = prep_data(img_dim[1], img_dim[2], args)
 
     print("Building model...")
     dcgan_builder = dcgan(num_layer=args.num_layer)
 
     # Load generator pre-trained module
-    gen_params_file = '../model_zoo/celeba_G.params'
+    gen_params_file = '../model_zoo/%s/%s_G_50000.params' % (args.dataset, args.dataset)
     generator = dcgan_builder.make_generator()
     generator.load_params(gen_params_file, ctx)
 
@@ -111,7 +110,7 @@ if __name__ == '__main__':
     alexnet_feature.load_params(get_model_file('alexnet'), ctx, ignore_extra=True)
 
     # Initialize parameters and set optimizer for predictor
-    predictor = dcgan_builder.make_predictor()
+    predictor = dcgan_builder.make_predictor(num_dim=args.latent_vector_size)
     pred_loss_func = loss.L2Loss()
     predictor.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
     pred_trainer = Trainer(predictor.collect_params(), 'adam',
@@ -121,7 +120,7 @@ if __name__ == '__main__':
             'beta1': args.beta1,
         })
 
-    if use_hybrid:
+    if args.use_hybrid:
         generator.hybridize()
         alexnet_feature.hybridize()
         predictor.hybridize()
@@ -139,14 +138,15 @@ if __name__ == '__main__':
             with ag.record():
                 for real_img in real_img_slice:
                     pred_latent_vector = predictor.forward(real_img)
+                    pred_latent_vector = pred_latent_vector.reshape((real_img.shape[0], args.latent_vector_size, 1, 1))
                     gen_img = generator.forward(pred_latent_vector)
-                    gen_img_upscale = mx.nd.UpSampling(data=gen_img, scale=4, sample_type='bilinear')
-                    real_img_upscale = mx.nd.UpSampling(data=real_img, scale=4, sample_type='bilinear')
+                    gen_img_upscale = mx.nd.UpSampling(gen_img, num_filter=3, num_args=1, scale=4, sample_type='nearest')
+                    real_img_upscale = mx.nd.UpSampling(real_img, num_filter=3, num_args=1, scale=4, sample_type='nearest')
                     alexnet_gen_output = alexnet_feature.forward(gen_img_upscale)
                     alexnet_real_output = alexnet_feature.forward(real_img_upscale)
                     # Total loss is sum of pixel to pixel L2 loss and alexnet feature output L2 loss
-                    pixel_loss = pred_loss(gen_img, real_img)
-                    alexnet_feature_loss = pred_loss(alexnet_gen_output, alexnet_real_output)
+                    pixel_loss = pred_loss_func(gen_img, real_img)
+                    alexnet_feature_loss = pred_loss_func(alexnet_gen_output, alexnet_real_output)
                     loss = pixel_loss + alexnet_feature_loss
                     pred_loss.append(loss)
                     loss_val += loss.asnumpy()
@@ -158,7 +158,7 @@ if __name__ == '__main__':
             if t % 10 == 0:
                 print('epoch:', epoch, 'iter:', t, 'metric:', loss_val.mean())
 
-        if args.save_model:
-            print('Saving model...')
-            mod_gen.save_params('%s_P_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
+    if args.save_model:
+        print('Saving model...')
+        predictor.save_params('%s_P_%s-%04d.params' % (args.dataset, stamp, args.num_epoch))
 
