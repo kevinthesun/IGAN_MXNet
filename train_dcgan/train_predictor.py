@@ -49,6 +49,11 @@ parser.add_argument('--save_model', type=bool, default=True,
 
 img_dim = (3, 64, 64)
 alexnet_input_dim = (3, 256, 256)
+pkg_dir = os.path.dirname(os.path.abspath(__file__))
+mean_channel = mx.nd.array(np.load(os.path.join(pkg_dir, 'ilsvrc_2012_mean.npy')).mean(1).mean(1))
+expand_dim = [0, 2, 3]
+for dim in expand_dim:
+    mean_channel = mx.nd.expand_dims(mean_channel, axis=dim)
 
 # Utility functions
 class AlexNetFeature(HybridBlock):
@@ -75,16 +80,14 @@ class AlexNetFeature(HybridBlock):
         x = self.features(x)
         return x
 
-def transform_im(img, npxl=64, nc=3):
+def transform_im(img, mean_im, npxl=64, nc=3):
     if nc == 3:
         img_trans = (img + 1.0) * 127.5
     else:
         #img_trans = T.tile(img, [1,1,1,3]) * 255.0  #[hack] to-be-tested
         #TODO
         img_trans = 0
-    mean_channel = np.load(os.path.join(pkg_dir, 'ilsvrc_2012_mean.npy')).mean(1).mean(1)
-    mean_im = mean_channel[np.newaxis,:,np.newaxis,np.newaxis]
-    mean_im = floatX(np.tile(mean_im, [1,1, npxl, npxl]))
+    mean_im = mx.nd.tile(mean_im, (1,1, npxl, npxl))
     img_trans = img_trans[:, [2,1,0], :,:]
     img_trans = img_trans - mean_im
     return img_trans
@@ -140,8 +143,10 @@ if __name__ == '__main__':
                     pred_latent_vector = predictor.forward(real_img)
                     pred_latent_vector = pred_latent_vector.reshape((real_img.shape[0], args.latent_vector_size, 1, 1))
                     gen_img = generator.forward(pred_latent_vector)
-                    gen_img_upscale = mx.nd.UpSampling(gen_img, num_filter=3, num_args=1, scale=4, sample_type='nearest')
-                    real_img_upscale = mx.nd.UpSampling(real_img, num_filter=3, num_args=1, scale=4, sample_type='nearest')
+                    norm_gen_img = transform_im(gen_img, mean_channel)
+                    norm_real_img = transform_im(real_img, mean_channel)
+                    gen_img_upscale = mx.nd.UpSampling(norm_gen_img, num_filter=3, num_args=1, scale=4, sample_type='nearest')
+                    real_img_upscale = mx.nd.UpSampling(norm_real_img, num_filter=3, num_args=1, scale=4, sample_type='nearest')
                     alexnet_gen_output = alexnet_feature.forward(gen_img_upscale)
                     alexnet_real_output = alexnet_feature.forward(real_img_upscale)
                     # Total loss is sum of pixel to pixel L2 loss and alexnet feature output L2 loss
