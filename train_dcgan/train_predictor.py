@@ -60,35 +60,52 @@ class AlexNetFeature(HybridBlock):
     """AlexNet model from the `"One weird trick..." <https://arxiv.org/abs/1404.5997>`_ paper.
        Extract layers until the fourth convolutional layer.
     """
-    def __init__(self, classes=1000, **kwargs):
+    def __init__(self, **kwargs):
         super(AlexNetFeature, self).__init__(**kwargs)
-        with self.name_scope():
-            self.features = nn.HybridSequential(prefix='')
-            with self.features.name_scope():
-                self.features.add(nn.Conv2D(64, kernel_size=11, strides=4, padding=2))
-                self.features.add(nn.Activation('relu'))
-                self.features.add(nn.MaxPool2D(pool_size=3, strides=2))
-                self.features.add(nn.Conv2D(192, kernel_size=5, padding=2))
-                self.features.add(nn.Activation('relu'))
-                self.features.add(nn.MaxPool2D(pool_size=3, strides=2))
-                self.features.add(nn.Conv2D(384, kernel_size=3, padding=1))
-                self.features.add(nn.Activation('relu'))
-                self.features.add(nn.Conv2D(256, kernel_size=3, padding=1))
-                self.features.add(nn.Activation('relu'))
+        self.conv1 = nn.Conv2D(64, kernel_size=11, strides=4, padding=2)
+        self.pool1 = nn.MaxPool2D(pool_size=3, strides=2)
+        self.conv2 = nn.Conv2D(192, kernel_size=5, padding=2)
+        self.pool2 = nn.MaxPool2D(pool_size=3, strides=2)
+        self.conv3 = nn.Conv2D(384, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2D(256, kernel_size=3, padding=1)
+
 
     def hybrid_forward(self, F, x):
-        x = self.features(x)
+        x = self.conv1(x)
+        x = F.Activation(x, act_type='relu')
+        x = self.pool1(x)
+        x = F.LRN(x, alpha=0.0001 / 5.0, beta=0.75, knorm=1, nsize=5)
+        x = self.conv2(x)
+        x = F.Activation(x, act_type='relu')
+        x = self.pool2(x)
+        x = F.LRN(x, alpha=0.0001 / 5.0, beta=0.75, knorm=1, nsize=5)
+        x = self.conv3(x)
+        x = F.Activation(x, act_type='relu')
+        x = self.conv4(x)
+        x = F.Activation(x, act_type='relu')
         return x
+
+def load_alexnet_params(alexnet_feature, alexnet, num_layer = 4):
+    alexnet_feature.initialize(mx.init.Normal(0.02), ctx=mx.cpu())
+    dummy = mx.random.normal(0, 1.0, shape=(1, 3, 256, 256))
+    alexnet_feature(dummy)
+    feature_params = alexnet_feature.collect_params()
+    alexnet_params = alexnet.collect_params()
+    for i in range(num_layer):
+        feature_params["conv%d_weight" % (i)].set_data(
+            alexnet_params["alexnet0_conv%d_weight" % (i)].data())
+        feature_params["conv%d_bias" % (i)].set_data(
+            alexnet_params["alexnet0_conv%d_bias" % (i)].data())
 
 def transform_im(img, mean_im, npxl=64, nc=3):
     if nc == 3:
-        img_trans = (img + 1.0) * 127.5
+        img_trans = (img.astype(np.float32) + 1.0) * 127.5
     else:
         #img_trans = T.tile(img, [1,1,1,3]) * 255.0  #[hack] to-be-tested
         #TODO
         img_trans = 0
     mean_im = mx.nd.tile(mean_im, (1,1, npxl, npxl))
-    img_trans = img_trans[:, [2,1,0], :,:]
+    #img_trans = img_trans[:, [2,1,0], :,:]
     img_trans = img_trans - mean_im
     return img_trans
 
@@ -110,7 +127,8 @@ if __name__ == '__main__':
 
     # Create alexnet conv4 feature network
     alexnet_feature = AlexNetFeature()
-    alexnet_feature.load_params(get_model_file('alexnet'), ctx, ignore_extra=True)
+    alexnet = alexnet(pretrained=True)
+    load_alexnet_params(alexnet_feature, alexnet)
 
     # Initialize parameters and set optimizer for predictor
     predictor = dcgan_builder.make_predictor(num_dim=args.latent_vector_size)

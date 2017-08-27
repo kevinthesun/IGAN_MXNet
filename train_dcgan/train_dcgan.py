@@ -47,57 +47,6 @@ parser.add_argument('--save_model', type=bool, default=True,
 img_dim = (3, 64, 64)
 
 # Utility functions
-def _apply_weighting(F, loss, weight=None, sample_weight=None):
-    """Apply weighting to loss.
-    Parameters
-    ----------
-    loss : Symbol
-        The loss to be weighted.
-    weight : float or None
-        Global scalar weight for loss.
-    sample_weight : Symbol or None
-        Per sample weighting. Must be broadcastable to
-        the same shape as loss. For example, if loss has
-        shape (64, 10) and you want to weight each sample
-        in the batch separately, `sample_weight` should have
-        shape (64, 1).
-    Returns
-    -------
-    loss : Symbol
-        Weighted loss
-    """
-    if sample_weight is not None:
-        loss = F.broadcast_mul(loss, sample_weight)
-
-    if weight is not None:
-        assert isinstance(weight, numeric_types), "weight must be a number"
-        loss = loss * weight
-
-    return loss
-
-def _reshape_label_as_output(F, output, label):
-    # for symbolic output.shape is not available so we reshape
-    # to empty shape and let it be inferred from output's shape
-    # via the '-' operator later.
-    return label.reshape(output.shape) if F is ndarray else label.reshape(())
-
-class LogisticLoss(loss.Loss):
-    """Computes the logistic cross entropy loss.
-    """
-    def __init__(self, from_sigmoid=False, weight=None, batch_axis=0, **kwargs):
-        super(LogisticLoss, self).__init__(weight, batch_axis, **kwargs)
-        self._from_sigmoid = from_sigmoid
-
-    def hybrid_forward(self, F, output, label, sample_weight=None):
-        label = _reshape_label_as_output(F, output, label)
-        if not self._from_sigmoid:
-            max_val = F.maximum(-output, 0)
-            loss = output - output*label + max_val + F.log(F.exp(-max_val)+F.exp(-output-max_val))
-        else:
-            loss = -(F.log(output+1e-8)*label + F.log(1.-output+1e-8)*(1.-label))
-        loss = _apply_weighting(F, loss, self._weight, sample_weight)
-        return F.mean(loss, axis=self._batch_axis, exclude=True)
-
 class RandIter(mx.io.DataIter):
     def __init__(self, batch_size, ndim):
         self.batch_size = batch_size
@@ -182,7 +131,7 @@ if __name__ == '__main__':
 
     # Initialize parameters and set optimizer for discriminator
     discriminator = dcgan_builder.make_discriminator()
-    dist_loss_func = LogisticLoss()
+    dist_loss_func = loss.SigmoidBinaryCrossEntropyLoss()
     discriminator.collect_params().initialize(mx.init.Normal(0.02), ctx=ctx)
     dist_trainer = Trainer(discriminator.collect_params(), 'adam',
         {
